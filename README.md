@@ -3,9 +3,8 @@
 A cache simulator that accepts cache configuration parameters and a list of memory addresses,
 then simulates cache behavior (hits/misses) using an LRU replacement policy.
 
-## Team Members
-- [Your Name Here]
-- [Partner's Name Here]
+## Name
+- Sarbocha Pandey
 
 ## Build
 
