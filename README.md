@@ -1,76 +1,83 @@
 # Cache Simulator
 
-A cache simulator that accepts cache configuration parameters and a list of memory addresses,
-then simulates cache behavior (hits/misses) using an LRU replacement policy.
+A direct-mapped and set-associative cache simulator written in C++.
 
-## Name
-- Sarbocha Pandey
+## Author
+Sarbocha Pandey
 
-## Build
+## Description
 
-```bash
-make
+This program simulates the behavior of a cache given a configuration and a sequence of memory addresses. For each memory reference, the simulator reports whether it results in a cache hit or miss.
+
+## Build Instructions
+
+### Windows (MinGW)
+```powershell
+g++ -o cache_sim cache.cpp -static
 ```
 
-This produces the executable `cache_sim`.
-
-## Run
-
+### Linux / macOS
 ```bash
-./cache_sim <num_entries> <associativity> <input_memory_reference_file>
+g++ -o cache_sim cache.cpp
 ```
 
-| Argument | Description |
-|---|---|
-| `num_entries` | Total number of cache entries (must be a power of 2) |
-| `associativity` | Number of ways per set (must evenly divide `num_entries`) |
-| `input_memory_reference_file` | File containing space-separated memory word addresses |
+## Usage
 
-### Examples
-
-**Direct-mapped (4 entries, 1-way):**
-```bash
-./cache_sim 4 1 input0
+```
+./cache_sim num_entries associativity input_file
 ```
 
-**2-way set-associative (4 entries, 2 sets of 2):**
-```bash
-./cache_sim 4 2 input0
-```
+### Arguments
+- `num_entries` — total number of cache entries (must be a power of 2)
+- `associativity` — associativity of the cache (must evenly divide `num_entries`)
+- `input_file` — path to a file containing space-separated memory addresses
 
-**Fully associative (4 entries, 4-way):**
-```bash
-./cache_sim 4 4 input0
+## Input Format
+
+The input file should contain memory addresses separated by spaces. For example:
+
+```
+1 3 5 1 3 1
 ```
 
 ## Output
 
-Results are written to `cache_sim_output` in the format:
-```
-<address> : HIT
-<address> : MISS
-...
-```
-
-## Design Notes
-
-- **Block size**: 1 word (as specified)
-- **Addresses**: Treated as word addresses
-- **Index bits**: log2(num_sets), where num_sets = num_entries / associativity
-- **Tag**: upper bits of the address after the index field
-- **Replacement policy**: LRU (Least Recently Used) using a doubly-linked list + hash map for O(1) hit/evict
-- **Initial state**: All entries invalid (cold cache)
-
-### Address Breakdown
+The simulator writes results to a file called `cache_sim_output` in the current directory. Each line corresponds to one memory reference:
 
 ```
-| <--- tag ---> | <--- index (log2(num_sets) bits) ---> |
+[ADDR] : [HIT or MISS]
 ```
 
-For a fully-associative cache (num_sets = 1), index_bits = 0, so the entire address is the tag.
+### Example
 
-## Clean
+Given the input above and the command:
+```
+./cache_sim 4 2 input.txt
+```
 
+The output file will contain:
+```
+1 : MISS
+3 : MISS
+5 : MISS
+1 : MISS
+3 : MISS
+1 : HIT
+```
+
+To view the output on Windows:
+```powershell
+type cache_sim_output
+```
+
+On Linux / macOS:
 ```bash
-make clean
+cat cache_sim_output
 ```
+
+## Implementation Details
+
+- Cache is initially empty (all entries invalid)
+- Each cache block holds one word
+- Memory references are word addresses
+- LRU (Least Recently Used) replacement policy is used for eviction
