@@ -1,112 +1,184 @@
 #include <iostream>
 #include <fstream>
-#include <vector>
-#include <string>
+#include <cstdlib>
 #include <cmath>
+#include <string>
 
 using namespace std;
 
-// global cache configuration
-int num_entries;
-int associativity;
-int num_sets;
-int index_bits;
+// ─── Entry class ─────────────────────────────────────────────────────────────
+// represents a single cache line (one slot in the cache)
 
-// a single cache line has a valid bit and a tag
-struct CacheLine {
+class Entry {
+public:
+    Entry() : valid(false), tag(0), ref(0) {}
+    ~Entry() {}
+
+    void set_tag(int _tag)   { tag   = _tag;   }
+    int  get_tag()           { return tag;      }
+
+    void set_valid(bool _valid) { valid = _valid; }
+    bool get_valid()            { return valid;   }
+
+    void set_ref(int _ref)  { ref = _ref;  }
+    int  get_ref()          { return ref;  }
+
+    void display(ofstream& outfile) {
+        outfile << "valid=" << valid << " tag=" << tag << " ref=" << ref;
+    }
+
+private:
     bool valid;
-    unsigned long tag;
+    unsigned tag;
+    int ref;   // used for LRU tracking (higher = older)
 };
 
-// the cache is a 2D array: [set index][way]
-vector<vector<CacheLine>> cache;
+// ─── Cache class ─────────────────────────────────────────────────────────────
 
-// tracks how long ago each line was used (higher = older)
-vector<vector<int>> age;
+class Cache {
+public:
+    Cache(int _num_entries, int _assoc) {
+        num_entries = _num_entries;
+        assoc       = _assoc;
+        num_sets    = num_entries / assoc;
 
-void init_cache() {
-    // calculate number of sets and how many bits we need for the index
-    num_sets   = num_entries / associativity;
-    index_bits = (int)log2(num_sets);
+        // allocate 2D array: entries[set][way]
+        entries = new Entry*[num_sets];
+        for (int i = 0; i < num_sets; i++)
+            entries[i] = new Entry[assoc];
+    }
 
-    // initialize all cache lines as invalid (cache starts empty)
-    cache.assign(num_sets, vector<CacheLine>(associativity, {false, 0}));
-    age.assign(num_sets, vector<int>(associativity, 0));
-}
+    ~Cache() {
+        for (int i = 0; i < num_sets; i++)
+            delete[] entries[i];
+        delete[] entries;
+    }
 
-// simulates a memory access, returns true on hit and false on miss
-bool access_cache(unsigned long addr) {
-    // extract the set index and tag from the address
-    unsigned long index = addr & ((1UL << index_bits) - 1);
-    unsigned long tag   = addr >> index_bits;
+    // extract the set index from an address
+    int get_index(unsigned long addr) {
+        int index_bits = (int)log2(num_sets);
+        return addr & ((1UL << index_bits) - 1);
+    }
 
-    // check all ways in the set for a hit
-    for (int i = 0; i < associativity; i++) {
-        if (cache[index][i].valid && cache[index][i].tag == tag) {
-            // hit - reset this line's age and increment everyone else's
-            for (int j = 0; j < associativity; j++)
-                age[index][j]++;
-            age[index][i] = 0;
-            return true;
+    // extract the tag from an address
+    int get_tag(unsigned long addr) {
+        int index_bits = (int)log2(num_sets);
+        return addr >> index_bits;
+    }
+
+    // check if address is in cache; write HIT/MISS to output file
+    bool hit(ofstream& outfile, unsigned long addr) {
+        int index = get_index(addr);
+        int tag   = get_tag(addr);
+
+        for (int i = 0; i < assoc; i++) {
+            if (entries[index][i].get_valid() && entries[index][i].get_tag() == tag) {
+                // hit - reset this line's ref, bump everyone else
+                for (int j = 0; j < assoc; j++)
+                    entries[index][j].set_ref(entries[index][j].get_ref() + 1);
+                entries[index][i].set_ref(0);
+                outfile << addr << " : HIT\n";
+                return true;
+            }
+        }
+
+        outfile << addr << " : MISS\n";
+        return false;
+    }
+
+    // place address into cache (called after a miss)
+    void update(ofstream& outfile, unsigned long addr) {
+        int index = get_index(addr);
+        int tag   = get_tag(addr);
+
+        // look for an empty slot first
+        for (int i = 0; i < assoc; i++) {
+            if (!entries[index][i].get_valid()) {
+                entries[index][i].set_valid(true);
+                entries[index][i].set_tag(tag);
+                for (int j = 0; j < assoc; j++)
+                    entries[index][j].set_ref(entries[index][j].get_ref() + 1);
+                entries[index][i].set_ref(0);
+                return;
+            }
+        }
+
+        // no empty slot - evict the LRU line (highest ref value)
+        int lru = 0;
+        for (int i = 1; i < assoc; i++) {
+            if (entries[index][i].get_ref() > entries[index][lru].get_ref())
+                lru = i;
+        }
+        entries[index][lru].set_tag(tag);
+        for (int j = 0; j < assoc; j++)
+            entries[index][j].set_ref(entries[index][j].get_ref() + 1);
+        entries[index][lru].set_ref(0);
+    }
+
+    void display(ofstream& outfile) {
+        for (int i = 0; i < num_sets; i++) {
+            outfile << "Set " << i << ": ";
+            for (int j = 0; j < assoc; j++) {
+                entries[i][j].display(outfile);
+                outfile << " | ";
+            }
+            outfile << "\n";
         }
     }
 
-    // miss - first try to find an empty slot before evicting
-    for (int i = 0; i < associativity; i++) {
-        if (!cache[index][i].valid) {
-            cache[index][i] = {true, tag};
-            for (int j = 0; j < associativity; j++)
-                age[index][j]++;
-            age[index][i] = 0;
-            return false;
-        }
-    }
+private:
+    int assoc;
+    unsigned num_entries;
+    int num_sets;
+    Entry **entries;  // 2D array [set][way]
+};
 
-    // no empty slot, so evict the least recently used line
-    int lru = 0;
-    for (int i = 1; i < associativity; i++) {
-        if (age[index][i] > age[index][lru])
-            lru = i;
-    }
-    cache[index][lru] = {true, tag};
-    for (int j = 0; j < associativity; j++)
-        age[index][j]++;
-    age[index][lru] = 0;
-
-    return false;
-}
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
-    if (argc != 4) {
-        cout << "Usage: ./cache_sim num_entries associativity input_file" << endl;
-        return 1;
+    if (argc < 4) {
+        cout << "Usage: " << endl;
+        cout << "   ./cache num_entries associativity filename" << endl;
+        return 0;
     }
 
-    num_entries   = stoi(argv[1]);
-    associativity = stoi(argv[2]);
-    string input_file = argv[3];
+    unsigned entries = atoi(argv[1]);
+    unsigned assoc   = atoi(argv[2]);
+    string filename  = argv[3];
 
-    init_cache();
+    // follow the professor's file naming pattern
+    string input_filename  = filename;
+    string output_filename = "cache_sim_output";
 
-    // open the input file with memory addresses
-    ifstream fin(input_file);
-    if (!fin) {
-        cout << "Error opening input file" << endl;
-        return 1;
+    cout << "Number of entries: " << entries << endl;
+    cout << "Associativity: "     << assoc   << endl;
+    cout << "Input File Name: "   << filename << endl;
+
+    // open input file
+    ifstream input;
+    input.open(input_filename);
+    if (!input.is_open()) {
+        cerr << "Could not open input file " << input_filename << ". Exiting ..." << endl;
+        exit(0);
     }
 
-    // results go into cache_sim_output
-    ofstream fout("cache_sim_output");
+    // open output file
+    ofstream output;
+    output.open(output_filename);
 
-    // process each address and write hit/miss to output
+    // create the cache
+    Cache cache(entries, assoc);
+
+    // process each address
     unsigned long addr;
-    while (fin >> addr) {
-        bool hit = access_cache(addr);
-        fout << addr << " : " << (hit ? "HIT" : "MISS") << "\n";
+    while (input >> addr) {
+        bool is_hit = cache.hit(output, addr);
+        if (!is_hit)
+            cache.update(output, addr);
     }
 
-    fin.close();
-    fout.close();
+    input.close();
+    output.close();
 
     return 0;
 }
