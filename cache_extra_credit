@@ -1,0 +1,188 @@
+#include <iostream>
+#include <fstream>
+#include <unordered_set>
+
+using namespace std;
+
+class Entry {
+public:
+    Entry() : valid(false), tag(0), ref(0) {}
+
+    void set_tag(int t) { tag = t; }
+    int get_tag() { return tag; }
+
+    void set_valid(bool v) { valid = v; }
+    bool get_valid() { return valid; }
+
+    void set_ref(int r) { ref = r; }
+    int get_ref() { return ref; }
+
+private:
+    bool valid;
+    unsigned tag;
+    int ref;
+};
+
+class Cache {
+public:
+    Cache(int n, int a, int b);
+    ~Cache();
+
+    void increment_time() { time++; }
+
+    bool hit(unsigned long addr);
+    void update(unsigned long addr);
+
+    unordered_set<unsigned long> seen_blocks;
+
+private:
+    int assoc;
+    int num_entries;
+    int num_sets;
+    int block_size;
+    int time;
+
+    Entry **entries;
+
+    int get_index(unsigned long addr);
+    int get_tag(unsigned long addr);
+};
+
+// ---------------- Constructor ----------------
+Cache::Cache(int n, int a, int b) {
+    num_entries = n;
+    assoc = a;
+    block_size = b;
+    num_sets = num_entries / assoc;
+    time = 0;
+
+    entries = new Entry*[num_sets];
+    for (int i = 0; i < num_sets; i++) {
+        entries[i] = new Entry[assoc];
+    }
+}
+
+// ---------------- Destructor ----------------
+Cache::~Cache() {
+    for (int i = 0; i < num_sets; i++) {
+        delete[] entries[i];
+    }
+    delete[] entries;
+}
+
+// ---------------- Address mapping ----------------
+int Cache::get_index(unsigned long addr) {
+    unsigned long block = (addr - 1) / block_size;
+    return block % num_sets;
+}
+
+int Cache::get_tag(unsigned long addr) {
+    unsigned long block = (addr - 1) / block_size;
+    return block / num_sets;
+}
+
+// ---------------- HIT ----------------
+bool Cache::hit(unsigned long addr) {
+    int index = get_index(addr);
+    int tag = get_tag(addr);
+
+    for (int i = 0; i < assoc; i++) {
+        if (entries[index][i].get_valid() &&
+            entries[index][i].get_tag() == tag) {
+
+            entries[index][i].set_ref(time);
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------- UPDATE (LRU) ----------------
+void Cache::update(unsigned long addr) {
+    int index = get_index(addr);
+    int tag = get_tag(addr);
+
+    // empty slot
+    for (int i = 0; i < assoc; i++) {
+        if (!entries[index][i].get_valid()) {
+            entries[index][i].set_valid(true);
+            entries[index][i].set_tag(tag);
+            entries[index][i].set_ref(time);
+            return;
+        }
+    }
+
+    // LRU replacement
+    int lru = 0;
+    int min_ref = entries[index][0].get_ref();
+
+    for (int i = 1; i < assoc; i++) {
+        if (entries[index][i].get_ref() < min_ref) {
+            min_ref = entries[index][i].get_ref();
+            lru = i;
+        }
+    }
+
+    entries[index][lru].set_tag(tag);
+    entries[index][lru].set_valid(true);
+    entries[index][lru].set_ref(time);
+}
+
+// ---------------- MAIN ----------------
+int main(int argc, char* argv[]) {
+    if (argc != 5) {
+        cout << "Usage: ./cache_sim_extra num_entries assoc block_size input_file" << endl;
+        return 1;
+    }
+
+    int num_entries = stoi(argv[1]);
+    int assoc = stoi(argv[2]);
+    int block_size = stoi(argv[3]);
+    string filename = argv[4];
+
+    Cache L1(num_entries, assoc, block_size);
+    Cache L2(num_entries * 2, assoc, block_size);
+
+    ifstream infile(filename);
+    ofstream outfile("cache_sim_output");
+
+    unsigned long addr;
+
+    while (infile >> addr) {
+
+    L1.increment_time();
+    L2.increment_time();
+
+    unsigned long block = (addr - 1) / block_size;
+
+    // ---------------- L1 ----------------
+    if (L1.hit(addr)) {
+        outfile << addr << " : HIT" << endl;
+        continue;
+    }
+
+    // ---------------- L2 ----------------
+    if (L2.hit(addr)) {
+        outfile << addr << " : MISS (L2 HIT)" << endl;
+
+        L1.update(addr);   // promote to L1
+        continue;
+    }
+
+    // ---------------- MISS TYPE ----------------
+    if (L1.seen_blocks.find(block) == L1.seen_blocks.end()) {
+        outfile << addr << " : MISS (COMPULSORY)" << endl;
+        L1.seen_blocks.insert(block);
+    } else {
+        outfile << addr << " : MISS (CONFLICT/CAPACITY)" << endl;
+    }
+
+    L2.update(addr);
+    L1.update(addr);
+}
+
+    infile.close();
+    outfile.close();
+
+    return 0;
+}
