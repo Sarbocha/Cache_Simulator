@@ -1,48 +1,43 @@
 #include <iostream>
 #include <fstream>
 #include <cstdlib>
-#include <cmath>
 #include <string>
 
 using namespace std;
 
-// ─── Entry class ─────────────────────────────────────────────────────────────
-// represents a single cache line (one slot in the cache)
-
+// ─────────────────────────────────────────────────────────────
+// Entry class: represents one cache line
+// ─────────────────────────────────────────────────────────────
 class Entry {
 public:
-    Entry() : valid(false), tag(0), ref(0) {}
-    ~Entry() {}
+    Entry() : valid(false), tag(0), last_used(0) {}
 
-    void set_tag(int _tag)   { tag   = _tag;   }
-    int  get_tag()           { return tag;      }
+    void set_tag(unsigned t) { tag = t; }
+    unsigned get_tag() const { return tag; }
 
-    void set_valid(bool _valid) { valid = _valid; }
-    bool get_valid()            { return valid;   }
+    void set_valid(bool v) { valid = v; }
+    bool get_valid() const { return valid; }
 
-    void set_ref(int _ref)  { ref = _ref;  }
-    int  get_ref()          { return ref;  }
-
-    void display(ofstream& outfile) {
-        outfile << "valid=" << valid << " tag=" << tag << " ref=" << ref;
-    }
+    void set_last_used(unsigned long long t) { last_used = t; }
+    unsigned long long get_last_used() const { return last_used; }
 
 private:
     bool valid;
     unsigned tag;
-    int ref;   // used for LRU tracking (higher = older)
+    unsigned long long last_used;   // LRU timestamp
 };
 
-// ─── Cache class ─────────────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────────────
+// Cache class
+// ─────────────────────────────────────────────────────────────
 class Cache {
 public:
-    Cache(int _num_entries, int _assoc) {
-        num_entries = _num_entries;
-        assoc       = _assoc;
-        num_sets    = num_entries / assoc;
-
-        // allocate 2D array: entries[set][way]
+    Cache(int _num_entries, int _assoc)
+        : assoc(_assoc),
+          num_entries(_num_entries),
+          num_sets(_num_entries / _assoc),
+          time_counter(0)
+    {
         entries = new Entry*[num_sets];
         for (int i = 0; i < num_sets; i++)
             entries[i] = new Entry[assoc];
@@ -54,99 +49,98 @@ public:
         delete[] entries;
     }
 
-    // extract the set index from an address
-    int get_index(unsigned long addr) {
-        int index_bits = (int)log2(num_sets);
-        return addr & ((1UL << index_bits) - 1);
-    }
-
-    // extract the tag from an address
-    int get_tag(unsigned long addr) {
-        int index_bits = (int)log2(num_sets);
-        return addr >> index_bits;
-    }
-
-    // check if address is in cache; write HIT/MISS to output file
-    bool hit(ofstream& outfile, unsigned long addr) {
-        int index = get_index(addr);
-        int tag   = get_tag(addr);
-
-        for (int i = 0; i < assoc; i++) {
-            if (entries[index][i].get_valid() && entries[index][i].get_tag() == tag) {
-                // hit - reset this line's ref, bump everyone else
-                for (int j = 0; j < assoc; j++)
-                    entries[index][j].set_ref(entries[index][j].get_ref() + 1);
-                entries[index][i].set_ref(0);
-                outfile << addr << " : HIT\n";
-                return true;
-            }
+    // Compute index bits WITHOUT floating point
+    int get_index_bits() const {
+        int bits = 0;
+        int x = num_sets;
+        while (x > 1) {
+            x >>= 1;
+            bits++;
         }
-
-        outfile << addr << " : MISS\n";
-        return false;
+        return bits;
     }
 
-    // place address into cache (called after a miss)
-    void update(ofstream& outfile, unsigned long addr) {
-        int index = get_index(addr);
-        int tag   = get_tag(addr);
+    int get_index(unsigned long addr) const {
+        int index_bits = get_index_bits();
+        if (index_bits == 0) return 0;  // fully associative
+        unsigned long mask = (1UL << index_bits) - 1;
+        return (int)(addr & mask);
+    }
 
-        // look for an empty slot first
+    unsigned get_tag(unsigned long addr) const {
+        int index_bits = get_index_bits();
+        return (unsigned)(addr >> index_bits);
+    }
+
+    // Unified access: one timestamp per memory reference
+    void access(ofstream& outfile, unsigned long addr) {
+        time_counter++;   // ONE logical time step per access
+
+        int index = get_index(addr);
+        unsigned tag = get_tag(addr);
+
+        // ─── HIT check ─────────────────────────────────────────
         for (int i = 0; i < assoc; i++) {
-            if (!entries[index][i].get_valid()) {
-                entries[index][i].set_valid(true);
-                entries[index][i].set_tag(tag);
-                for (int j = 0; j < assoc; j++)
-                    entries[index][j].set_ref(entries[index][j].get_ref() + 1);
-                entries[index][i].set_ref(0);
+            if (entries[index][i].get_valid() &&
+                entries[index][i].get_tag() == tag) {
+
+                entries[index][i].set_last_used(time_counter);
+                outfile << addr << " : HIT\n";
                 return;
             }
         }
 
-        // no empty slot - evict the LRU line (highest ref value)
-        int lru = 0;
-        for (int i = 1; i < assoc; i++) {
-            if (entries[index][i].get_ref() > entries[index][lru].get_ref())
-                lru = i;
-        }
-        entries[index][lru].set_tag(tag);
-        for (int j = 0; j < assoc; j++)
-            entries[index][j].set_ref(entries[index][j].get_ref() + 1);
-        entries[index][lru].set_ref(0);
-    }
+        // ─── MISS ──────────────────────────────────────────────
+        outfile << addr << " : MISS\n";
 
-    void display(ofstream& outfile) {
-        for (int i = 0; i < num_sets; i++) {
-            outfile << "Set " << i << ": ";
-            for (int j = 0; j < assoc; j++) {
-                entries[i][j].display(outfile);
-                outfile << " | ";
+        // Try empty slot first
+        for (int i = 0; i < assoc; i++) {
+            if (!entries[index][i].get_valid()) {
+                entries[index][i].set_valid(true);
+                entries[index][i].set_tag(tag);
+                entries[index][i].set_last_used(time_counter);
+                return;
             }
-            outfile << "\n";
         }
+
+        // No empty slot → evict true LRU (smallest last_used)
+        int lru = 0;
+        unsigned long long min_time = entries[index][0].get_last_used();
+
+        for (int i = 1; i < assoc; i++) {
+            if (entries[index][i].get_last_used() < min_time) {
+                min_time = entries[index][i].get_last_used();
+                lru = i;
+            }
+        }
+
+        entries[index][lru].set_tag(tag);
+        entries[index][lru].set_valid(true);
+        entries[index][lru].set_last_used(time_counter);
     }
 
 private:
     int assoc;
-    unsigned num_entries;
+    int num_entries;
     int num_sets;
-    Entry **entries;  // 2D array [set][way]
+    Entry **entries;
+    unsigned long long time_counter;   // global timestamp
 };
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────────────
+// Main
+// ─────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
     if (argc < 4) {
-        cout << "Usage: " << endl;
-        cout << "   ./cache num_entries associativity filename" << endl;
+        cout << "Usage:\n";
+        cout << "   ./cache_sim num_entries associativity filename\n";
         return 0;
     }
 
-    unsigned entries = atoi(argv[1]);
-    unsigned assoc   = atoi(argv[2]);
+    unsigned entries = (unsigned)atoi(argv[1]);
+    unsigned assoc   = (unsigned)atoi(argv[2]);
     string filename  = argv[3];
 
-    // follow the professor's file naming pattern
     string input_filename  = filename;
     string output_filename = "cache_sim_output";
 
@@ -154,27 +148,23 @@ int main(int argc, char* argv[]) {
     cout << "Associativity: "     << assoc   << endl;
     cout << "Input File Name: "   << filename << endl;
 
-    // open input file
-    ifstream input;
-    input.open(input_filename);
+    ifstream input(input_filename);
     if (!input.is_open()) {
-        cerr << "Could not open input file " << input_filename << ". Exiting ..." << endl;
-        exit(0);
+        cerr << "Could not open input file " << input_filename << endl;
+        return 0;
     }
 
-    // open output file
-    ofstream output;
-    output.open(output_filename);
+    ofstream output(output_filename);
+    if (!output.is_open()) {
+        cerr << "Could not open output file " << output_filename << endl;
+        return 0;
+    }
 
-    // create the cache
-    Cache cache(entries, assoc);
+    Cache cache((int)entries, (int)assoc);
 
-    // process each address
     unsigned long addr;
     while (input >> addr) {
-        bool is_hit = cache.hit(output, addr);
-        if (!is_hit)
-            cache.update(output, addr);
+        cache.access(output, addr);
     }
 
     input.close();
