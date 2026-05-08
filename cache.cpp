@@ -1,174 +1,175 @@
-#include <iostream>
-#include <fstream>
-#include <cstdlib>
-#include <string>
+#include<iostream>
+#include<fstream>
 
 using namespace std;
 
-// ─────────────────────────────────────────────────────────────
-// Entry class: represents one cache line
-// ─────────────────────────────────────────────────────────────
 class Entry {
 public:
-    Entry() : valid(false), tag(0), last_used(0) {}
+  Entry();
+  ~Entry();
 
-    void set_tag(unsigned t) { tag = t; }
-    unsigned get_tag() const { return tag; }
+  void set_tag(int _tag) { tag = _tag; }
+  int get_tag() { return tag; }
 
-    void set_valid(bool v) { valid = v; }
-    bool get_valid() const { return valid; }
+  void set_valid(bool _valid) { valid = _valid; }
+  bool get_valid() { return valid; }
 
-    void set_last_used(unsigned long long t) { last_used = t; }
-    unsigned long long get_last_used() const { return last_used; }
+  void set_ref(int _ref) { ref = _ref; }
+  int get_ref() { return ref; }
 
-private:
-    bool valid;
-    unsigned tag;
-    unsigned long long last_used;   // LRU timestamp
+private:  
+  bool valid;
+  unsigned tag;
+  int ref;
 };
 
-// ─────────────────────────────────────────────────────────────
-// Cache class
-// ─────────────────────────────────────────────────────────────
+Entry::Entry() {
+    valid = false;
+    tag = 0;
+    ref = 0;
+}
+
+Entry::~Entry() {}
+
 class Cache {
 public:
-    Cache(int _num_entries, int _assoc)
-        : assoc(_assoc),
-          num_entries(_num_entries),
-          num_sets(_num_entries / _assoc),
-          time_counter(0)
-    {
-        entries = new Entry*[num_sets];
-        for (int i = 0; i < num_sets; i++)
-            entries[i] = new Entry[assoc];
-    }
+  Cache(int, int);
+  ~Cache();
 
-    ~Cache() {
-        for (int i = 0; i < num_sets; i++)
-            delete[] entries[i];
-        delete[] entries;
-    }
+  int get_index(unsigned long addr);
+  int get_tag(unsigned long addr);
 
-    // Compute index bits WITHOUT floating point
-    int get_index_bits() const {
-        int bits = 0;
-        int x = num_sets;
-        while (x > 1) {
-            x >>= 1;
-            bits++;
-        }
-        return bits;
-    }
-
-    int get_index(unsigned long addr) const {
-        int index_bits = get_index_bits();
-        if (index_bits == 0) return 0;  // fully associative
-        unsigned long mask = (1UL << index_bits) - 1;
-        return (int)(addr & mask);
-    }
-
-    unsigned get_tag(unsigned long addr) const {
-        int index_bits = get_index_bits();
-        return (unsigned)(addr >> index_bits);
-    }
-
-    // Unified access: one timestamp per memory reference
-    void access(ofstream& outfile, unsigned long addr) {
-        time_counter++;   // ONE logical time step per access
-
-        int index = get_index(addr);
-        unsigned tag = get_tag(addr);
-
-        // ─── HIT check ─────────────────────────────────────────
-        for (int i = 0; i < assoc; i++) {
-            if (entries[index][i].get_valid() &&
-                entries[index][i].get_tag() == tag) {
-
-                entries[index][i].set_last_used(time_counter);
-                outfile << addr << " : HIT\n";
-                return;
-            }
-        }
-
-        // ─── MISS ──────────────────────────────────────────────
-        outfile << addr << " : MISS\n";
-
-        // Try empty slot first
-        for (int i = 0; i < assoc; i++) {
-            if (!entries[index][i].get_valid()) {
-                entries[index][i].set_valid(true);
-                entries[index][i].set_tag(tag);
-                entries[index][i].set_last_used(time_counter);
-                return;
-            }
-        }
-
-        // No empty slot → evict true LRU (smallest last_used)
-        int lru = 0;
-        unsigned long long min_time = entries[index][0].get_last_used();
-
-        for (int i = 1; i < assoc; i++) {
-            if (entries[index][i].get_last_used() < min_time) {
-                min_time = entries[index][i].get_last_used();
-                lru = i;
-            }
-        }
-
-        entries[index][lru].set_tag(tag);
-        entries[index][lru].set_valid(true);
-        entries[index][lru].set_last_used(time_counter);
-    }
+  bool hit(ofstream& outfile, unsigned long addr);
+  void update(unsigned long addr);
+  void increment_time(); 
 
 private:
-    int assoc;
-    int num_entries;
-    int num_sets;
-    Entry **entries;
-    unsigned long long time_counter;   // global timestamp
+  int assoc;
+  unsigned num_entries;
+  int num_sets;
+  Entry **entries;
+  int time;
 };
 
-// ─────────────────────────────────────────────────────────────
+// Constructor
+Cache::Cache(int n, int a) {
+    num_entries = n;
+    assoc = a;
+    num_sets = num_entries / assoc;
+    time = 0;  
+
+    entries = new Entry*[num_sets];
+    for (int i = 0; i < num_sets; i++) {
+        entries[i] = new Entry[assoc];
+    }
+}
+
+// Destructor
+Cache::~Cache() {
+    for (int i = 0; i < num_sets; i++) {
+        delete[] entries[i];
+    }
+    delete[] entries;
+}
+
+// Time increment (called once per access)
+void Cache::increment_time() {
+    time++;
+}
+
+// Index and tag
+int Cache::get_index(unsigned long addr) {
+    return addr % num_sets;
+}
+
+int Cache::get_tag(unsigned long addr) {
+    return addr / num_sets;
+}
+
+// Check hit
+bool Cache::hit(ofstream& outfile, unsigned long addr) {
+    int index = get_index(addr);
+    int tag = get_tag(addr);
+
+    for (int i = 0; i < assoc; i++) {
+        if (entries[index][i].get_valid() &&
+            entries[index][i].get_tag() == tag) {
+
+            entries[index][i].set_ref(time);  // update LRU
+            outfile << addr << " : HIT" << endl;
+            return true;
+        }
+    }
+
+    outfile << addr << " : MISS" << endl;
+    return false;
+}
+
+// Update cache on MISS
+void Cache::update(unsigned long addr) {
+    int index = get_index(addr);
+    int tag = get_tag(addr);
+
+    // Step 1: find empty slot
+    for (int i = 0; i < assoc; i++) {
+        if (!entries[index][i].get_valid()) {
+            entries[index][i].set_valid(true);
+            entries[index][i].set_tag(tag);
+            entries[index][i].set_ref(time);
+            return;
+        }
+    }
+
+    // Step 2: find LRU
+    int lru = 0;
+    int min_ref = entries[index][0].get_ref();
+
+    for (int i = 1; i < assoc; i++) {
+        if (entries[index][i].get_ref() < min_ref) {
+            min_ref = entries[index][i].get_ref();
+            lru = i;
+        }
+    }
+
+    // Replace LRU
+    entries[index][lru].set_tag(tag);
+    entries[index][lru].set_valid(true);
+    entries[index][lru].set_ref(time);
+}
+
 // Main
-// ─────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
-        cout << "Usage:\n";
-        cout << "   ./cache_sim num_entries associativity filename\n";
-        return 0;
+    if (argc != 4) {
+        cout << "Usage: ./cache_sim num_entries assoc input_file" << endl;
+        return 1;
     }
 
-    unsigned entries = (unsigned)atoi(argv[1]);
-    unsigned assoc   = (unsigned)atoi(argv[2]);
-    string filename  = argv[3];
+    int num_entries = stoi(argv[1]);
+    int assoc = stoi(argv[2]);
+    string filename = argv[3];
 
-    string input_filename  = filename;
-    string output_filename = "cache_sim_output";
+    Cache cache(num_entries, assoc);
 
-    cout << "Number of entries: " << entries << endl;
-    cout << "Associativity: "     << assoc   << endl;
-    cout << "Input File Name: "   << filename << endl;
-
-    ifstream input(input_filename);
-    if (!input.is_open()) {
-        cerr << "Could not open input file " << input_filename << endl;
-        return 0;
+    ifstream infile(filename);
+    if (!infile) {
+        cout << "Error: could not open input file." << endl;
+        return 1;
     }
 
-    ofstream output(output_filename);
-    if (!output.is_open()) {
-        cerr << "Could not open output file " << output_filename << endl;
-        return 0;
-    }
-
-    Cache cache((int)entries, (int)assoc);
+    ofstream outfile("cache_sim_output");
 
     unsigned long addr;
-    while (input >> addr) {
-        cache.access(output, addr);
+
+    while (infile >> addr) {
+        cache.increment_time();  // ONLY place time increases
+
+        if (!cache.hit(outfile, addr)) {
+            cache.update(addr);
+        }
     }
 
-    input.close();
-    output.close();
+    infile.close();
+    outfile.close();
 
     return 0;
 }
